@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Play, RotateCcw, Crown, MousePointer2, Zap, User, Lock, LogOut, UserPlus, Keyboard, Info, X, Settings, RefreshCw, Minimize2, Map, Maximize, Palette, Eye } from 'lucide-react';
+import { Trophy, Play, RotateCcw, Crown, MousePointer2, Zap, User, Lock, LogOut, UserPlus, Keyboard, Info, X, Settings, RefreshCw, Minimize2, Map, Maximize, Palette, Eye, Shield } from 'lucide-react';
 import { GameCanvas } from './components/GameCanvas';
 import { Duck, ControlMode, GameMode, Skin, Theme } from './types';
 import { SKINS } from './constants';
 
-type GameState = 'MENU' | 'PLAYING' | 'GAMEOVER' | 'AUTH';
+type GameState = 'MENU' | 'PLAYING' | 'GAMEOVER' | 'AUTH' | 'LOBBY';
 
 export default function App() {
   const [gameState, setGameState] = useState<GameState>('MENU');
+  const [selectedLobbyId, setSelectedLobbyId] = useState<number | null>(null);
   const [controlMode, setControlMode] = useState<ControlMode>(
     (localStorage.getItem('duck_control_mode') as ControlMode) || 'FOLLOW'
   );
@@ -21,10 +22,10 @@ export default function App() {
   const [highScore, setHighScore] = useState(0);
   const [leaderboard, setLeaderboard] = useState<{ name: string, score: number }[]>([]);
   const [powerUps, setPowerUps] = useState({
-    inventory: { SPEED: 0, VISION: 0, MAGNET: 0 },
-    active: { SPEED: 0, VISION: 0, MAGNET: 0 }
+    inventory: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 },
+    active: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 }
   });
-  const [powerUpToActivate, setPowerUpToActivate] = useState<'SPEED' | 'VISION' | 'MAGNET' | null>(null);
+  const [powerUpToActivate, setPowerUpToActivate] = useState<'SPEED' | 'VISION' | 'MAGNET' | 'SUPER' | null>(null);
   const [globalLeaderboard, setGlobalLeaderboard] = useState<{ name: string, score: number }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showControlMenu, setShowControlMenu] = useState(false);
@@ -204,9 +205,26 @@ export default function App() {
     localStorage.setItem('duck_game_mode', mode);
   };
 
-  const startGame = () => {
+  const startLobby = (lobbyId: number) => {
+    const lobby = [
+      { id: 1, allowGuest: true },
+      { id: 2, allowGuest: false },
+      { id: 3, allowGuest: false }
+    ].find(l => l.id === lobbyId);
+
+    if (lobby && !lobby.allowGuest && !token) {
+      setError("Bu lobiye girmek için giriş yapmalısın!");
+      setGameState('AUTH');
+      return;
+    }
+
+    setSelectedLobbyId(lobbyId);
     setScore(0);
     setGameState('PLAYING');
+  };
+
+  const startGame = () => {
+    setGameState('LOBBY');
   };
 
   const handleGameOver = async (finalScore: number) => {
@@ -276,8 +294,8 @@ export default function App() {
               setInfoClickCount(0);
               // Reset powerups to 0 on exit if they were 999
               setPowerUps({
-                inventory: { SPEED: 0, VISION: 0, MAGNET: 0 },
-                active: { SPEED: 0, VISION: 0, MAGNET: 0 }
+                inventory: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 },
+                active: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 }
               });
             }
           }}
@@ -675,6 +693,66 @@ export default function App() {
         </motion.div>
       )}
 
+        {gameState === 'LOBBY' && (
+          <motion.div
+            key="lobby"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className={`absolute inset-0 z-20 overflow-y-auto ${getOverlayBgClass()} backdrop-blur-xl custom-scrollbar`}
+          >
+            <div className="min-h-full flex flex-col items-center justify-center p-4 md:p-6">
+              <div className={`max-w-2xl w-full ${(theme === 'WHITE' || theme === 'PINK') ? 'bg-black/5 border-black/10' : 'bg-white/10 border-white/10'} p-6 md:p-8 rounded-[1.5rem] md:rounded-[2.5rem] border shadow-2xl space-y-6 md:space-y-8`}>
+                <div className="text-center space-y-2">
+                  <div className="w-12 h-12 md:w-16 md:h-16 bg-yellow-400 rounded-xl md:rounded-2xl flex items-center justify-center mx-auto mb-2 md:mb-4 shadow-xl shadow-yellow-400/20">
+                    <Map className="w-6 h-6 md:w-8 md:h-8 text-cyan-900" />
+                  </div>
+                  <h2 className={`text-2xl md:text-3xl font-black ${getTextColorClass()} uppercase tracking-tight`}>Lobi Seçimi</h2>
+                  <p className={`${getMutedTextColorClass()} font-medium text-xs md:text-sm`}>Oynamak istediğin gölü seç</p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                  {[
+                    { id: 1, name: "Genel Göl", desc: "Herkes katılabilir. Botlar ve insanlar bir arada.", icon: <Eye className="w-5 h-5" />, badge: "HERKESE AÇIK" },
+                    { id: 2, name: "Hesaplı Göl", desc: "Sadece kayıtlı üyeler. Botlar ve insanlar bir arada.", icon: <Lock className="w-5 h-5" />, badge: "HESAP GEREKLİ" },
+                    { id: 3, name: "Sadece İnsanlar", desc: "Sadece kayıtlı üyeler. Bot yok, sadece gerçek oyuncular.", icon: <User className="w-5 h-5" />, badge: "HESAP GEREKLİ + BOT YOK" }
+                  ].map((lobby) => (
+                    <button
+                      key={lobby.id}
+                      onClick={() => startLobby(lobby.id)}
+                      className={`group relative flex items-center gap-4 p-4 md:p-6 rounded-2xl border-2 transition-all active:scale-[0.98] text-left ${
+                        (theme === 'WHITE' || theme === 'PINK') 
+                          ? 'bg-white border-black/5 hover:border-yellow-400 hover:shadow-xl' 
+                          : 'bg-white/5 border-white/5 hover:border-yellow-400 hover:bg-white/10'
+                      }`}
+                    >
+                      <div className={`w-12 h-12 md:w-14 md:h-14 rounded-xl flex items-center justify-center transition-colors ${
+                        (theme === 'WHITE' || theme === 'PINK') ? 'bg-black/5 text-black' : 'bg-white/10 text-white'
+                      } group-hover:bg-yellow-400 group-hover:text-cyan-900`}>
+                        {lobby.icon}
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className={`font-black uppercase tracking-tight ${getTextColorClass()}`}>{lobby.name}</h3>
+                          <span className="text-[8px] font-black bg-cyan-400/20 text-cyan-400 px-1.5 py-0.5 rounded-md tracking-widest">{lobby.badge}</span>
+                        </div>
+                        <p className={`text-xs ${getMutedTextColorClass()} font-medium leading-relaxed`}>{lobby.desc}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={() => setGameState('MENU')}
+                  className={`w-full ${getMutedTextColorClass()} hover:text-yellow-400 text-[10px] md:text-sm font-bold transition-colors uppercase tracking-widest text-center`}
+                >
+                  Geri Dön
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
         {gameState === 'PLAYING' && (
           <motion.div
             key="playing"
@@ -697,11 +775,13 @@ export default function App() {
               activatePowerUp={powerUpToActivate}
               onSpecialDropSpawned={handleDropSpawned}
               devMode={devMode}
+              lobbyId={selectedLobbyId || 1}
+              token={token}
             />
             
             {/* HUD */}
-            <div className="absolute top-4 left-4 md:top-6 md:left-6 z-20 pointer-events-none">
-              <div className={` ${(theme === 'WHITE' || theme === 'PINK') ? 'bg-white/80 border-black/10 shadow-lg' : 'bg-black/40 border-white/10'} backdrop-blur-md border rounded-xl md:rounded-2xl p-2 md:p-4 flex items-center gap-2 md:gap-4`}>
+            <div className="absolute top-4 left-4 md:top-6 md:left-6 z-20 pointer-events-none flex flex-col gap-4">
+              <div className={` ${(theme === 'WHITE' || theme === 'PINK') ? 'bg-white/80 border-black/10 shadow-lg' : 'bg-black/40 border-white/10'} backdrop-blur-md border rounded-xl md:rounded-2xl p-2 md:p-4 flex items-center gap-2 md:gap-4 pointer-events-auto`}>
                 <div className="w-8 h-8 md:w-12 md:h-12 bg-yellow-400 rounded-lg md:rounded-xl flex items-center justify-center text-xl md:text-2xl">
                   🦆
                 </div>
@@ -712,8 +792,8 @@ export default function App() {
               </div>
 
               {/* Power-ups UI */}
-              {(devMode || powerUps.inventory.SPEED > 0 || powerUps.inventory.VISION > 0 || powerUps.inventory.MAGNET > 0 || powerUps.active.SPEED > 0 || powerUps.active.VISION > 0 || powerUps.active.MAGNET > 0) && (
-                <div className="flex flex-col gap-2 md:gap-3">
+              {(devMode || powerUps.inventory.SPEED > 0 || powerUps.inventory.VISION > 0 || powerUps.inventory.MAGNET > 0 || powerUps.inventory.SUPER > 0 || powerUps.active.SPEED > 0 || powerUps.active.VISION > 0 || powerUps.active.MAGNET > 0 || powerUps.active.SUPER > 0) && (
+                <div className="flex flex-col gap-2 md:gap-3 pointer-events-auto">
                   {/* Speed Power-up */}
                   {(devMode || powerUps.inventory.SPEED > 0 || powerUps.active.SPEED > 0) && (
                     <button 
@@ -860,12 +940,61 @@ export default function App() {
                       </div>
                     </button>
                   )}
+
+                  {/* Super Power-up */}
+                  {(devMode || powerUps.inventory.SUPER > 0 || powerUps.active.SUPER > 0) && (
+                    <button 
+                      onClick={() => {
+                        setPowerUpToActivate('SUPER');
+                        setTimeout(() => setPowerUpToActivate(null), 100);
+                      }}
+                      className={`bg-black/40 backdrop-blur-md border ${powerUps.active.SUPER > 0 ? 'border-red-400 shadow-[0_0_15px_rgba(248,113,113,0.3)]' : 'border-white/10'} rounded-xl md:rounded-2xl p-2 md:p-3 flex items-center gap-3 transition-all duration-300 text-left cursor-pointer hover:bg-black/60 active:scale-95`}
+                    >
+                      <div className="relative w-10 h-10 md:w-12 md:h-12 flex items-center justify-center">
+                        {/* Progress Ring */}
+                        {powerUps.active.SUPER > 0 && (
+                          <svg className="absolute inset-0 w-full h-full -rotate-90">
+                            <circle
+                              cx="50%"
+                              cy="50%"
+                              r="45%"
+                              fill="none"
+                              stroke="rgba(248,113,113,0.2)"
+                              strokeWidth="4"
+                            />
+                            <circle
+                              cx="50%"
+                              cy="50%"
+                              r="45%"
+                              fill="none"
+                              stroke="#f87171"
+                              strokeWidth="4"
+                              strokeDasharray="100"
+                              strokeDashoffset={100 - (powerUps.active.SUPER / 300) * 100}
+                              strokeLinecap="round"
+                              className="transition-all duration-100 ease-linear"
+                            />
+                          </svg>
+                        )}
+                        <div className={`w-8 h-8 md:w-10 md:h-10 rounded-lg md:rounded-xl flex items-center justify-center ${powerUps.active.SUPER > 0 ? 'bg-red-400 text-cyan-900' : 'bg-white/10 text-red-400'}`}>
+                          <Shield className="w-5 h-5 md:w-6 md:h-6" />
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[8px] md:text-[10px] font-black text-red-400 uppercase tracking-widest leading-none mb-1">Super Mode</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm md:text-lg font-black text-white">x{devMode ? '∞' : powerUps.inventory.SUPER}</span>
+                          <span className="text-[8px] md:text-[10px] font-bold text-white/30 uppercase tracking-tighter">[4]</span>
+                        </div>
+                      </div>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
 
             <div className="absolute top-4 right-4 md:top-6 md:right-6 z-20 pointer-events-none flex flex-col items-end gap-2 md:gap-4">
-              <div className={`hidden sm:block ${(theme === 'WHITE' || theme === 'PINK') ? 'bg-white/80 border-black/10 shadow-lg' : 'bg-black/60 border-white/10'} backdrop-blur-xl border rounded-2xl p-4 min-w-[200px] space-y-4 pointer-events-auto`}>
+              <div className={`hidden sm:block ${(theme === 'WHITE' || theme === 'PINK') ? 'bg-white/80 border-black/10 shadow-lg' : 'bg-black/60 border-white/10'} backdrop-blur shadow-xl border rounded-2xl p-4 min-w-[200px] space-y-4 pointer-events-auto`}>
                 <div className={`text-xs font-bold text-yellow-500 uppercase tracking-widest border-b ${(theme === 'WHITE' || theme === 'PINK') ? 'border-black/10' : 'border-white/10'} pb-2 flex items-center gap-2`}>
                   <Settings className="w-3 h-3" /> Ayarlar
                 </div>
@@ -885,7 +1014,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className={` ${(theme === 'WHITE' || theme === 'PINK') ? 'bg-white/80 border-black/10 shadow-lg' : 'bg-black/40 border-white/10'} backdrop-blur-md border rounded-xl md:rounded-2xl p-2 md:p-4 min-w-[120px] md:min-w-[160px]`}>
+              <div className={` ${(theme === 'WHITE' || theme === 'PINK') ? 'bg-white/80 border-black/10 shadow-lg' : 'bg-black/40 border-white/10'} backdrop-blur-md border rounded-xl md:rounded-2xl p-2 md:p-4 min-w-[120px] md:min-w-[160px] pointer-events-auto`}>
                 <div className="text-[10px] md:text-xs font-bold text-yellow-500 uppercase tracking-widest mb-1 md:mb-2 flex items-center gap-2">
                   <Trophy className="w-3 h-3" /> Leaderboard
                 </div>
@@ -1253,8 +1382,8 @@ export default function App() {
                         setHighScore(9999999);
                         setUnlockedSkins(SKINS.map(s => s.id));
                         setPowerUps({
-                          inventory: { SPEED: 999, VISION: 999, MAGNET: 999 },
-                          active: { SPEED: 0, VISION: 0, MAGNET: 0 }
+                          inventory: { SPEED: 999, VISION: 999, MAGNET: 999, SUPER: 999 },
+                          active: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 }
                         });
                       }
                     }}

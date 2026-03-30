@@ -6,6 +6,8 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createServer } from "http";
+import { Server } from "socket.io";
 
 dotenv.config();
 
@@ -34,8 +36,40 @@ db.exec(`
   );
 `);
 
+interface Player {
+  id: string;
+  name: string;
+  color: string;
+  skinId: string;
+  head: { x: number, y: number };
+  angle: number;
+  score: number;
+  isDead: boolean;
+  isBoosting: boolean;
+  trail: { x: number, y: number }[];
+}
+
+interface Lobby {
+  id: number;
+  name: string;
+  allowGuest: boolean;
+  hasBots: boolean;
+  players: Map<string, Player>;
+  bots: Player[];
+}
+
+const lobbies: Lobby[] = [
+  { id: 1, name: "Genel Göl (Herkes)", allowGuest: true, hasBots: true, players: new Map(), bots: [] },
+  { id: 2, name: "Hesaplı Göl (Botlu)", allowGuest: false, hasBots: true, players: new Map(), bots: [] },
+  { id: 3, name: "Sadece İnsanlar", allowGuest: false, hasBots: false, players: new Map(), bots: [] },
+];
+
 async function startServer() {
   const app = express();
+  const httpServer = createServer(app);
+  const io = new Server(httpServer, {
+    cors: { origin: "*" }
+  });
   const PORT = 3000;
 
   app.use(express.json());
@@ -87,10 +121,8 @@ async function startServer() {
     const { score } = req.body;
     const userId = req.user.id;
 
-    // Insert score
     db.prepare("INSERT INTO scores (user_id, score) VALUES (?, ?)").run(userId, score);
 
-    // Update high score if necessary
     const user = db.prepare("SELECT high_score FROM users WHERE id = ?").get(userId) as any;
     if (score > user.high_score) {
       db.prepare("UPDATE users SET high_score = ? WHERE id = ?").run(score, userId);
@@ -116,6 +148,74 @@ async function startServer() {
     res.json(leaderboard);
   });
 
+  // Socket.io Logic
+  io.on("connection", (socket) => {
+    console.log("User connected:", socket.id);
+
+    socket.on("join_lobby", ({ lobbyId, playerName, skinId, color, token }) => {
+      const lobby = lobbies.find(l => l.id === lobbyId);
+      if (!lobby) return socket.emit("error", "Lobi bulunamadı");
+
+      // Check auth requirements
+      if (!lobby.allowGuest && !token) {
+        return socket.emit("error", "Bu lobiye girmek için hesap açmalısın");
+      }
+
+      // Join room
+      socket.join(`lobby_${lobbyId}`);
+      
+      const player: Player = {
+        id: socket.id,
+        name: playerName,
+        color: color,
+        skinId: skinId,
+        head: { x: 1500, y: 1500 }, // Default spawn
+        angle: 0,
+        score: 0,
+        isDead: false,
+        isBoosting: false,
+        trail: []
+      };
+
+      lobby.players.set(socket.id, player);
+      
+      // Broadcast to others in lobby
+      socket.to(`lobby_${lobbyId}`).emit("player_joined", player);
+      
+      // Send current state to player
+      socket.emit("lobby_state", {
+        players: Array.from(lobby.players.values()),
+        bots: lobby.bots
+      });
+    });
+
+    socket.on("update_player", ({ lobbyId, head, angle, score, isBoosting, trail }) => {
+      const lobby = lobbies.find(l => l.id === lobbyId);
+      if (!lobby) return;
+
+      const player = lobby.players.get(socket.id);
+      if (player) {
+        player.head = head;
+        player.angle = angle;
+        player.score = score;
+        player.isBoosting = isBoosting;
+        player.trail = trail;
+
+        // Broadcast update to others
+        socket.to(`lobby_${lobbyId}`).emit("player_updated", player);
+      }
+    });
+
+    socket.on("disconnect", () => {
+      lobbies.forEach(lobby => {
+        if (lobby.players.has(socket.id)) {
+          lobby.players.delete(socket.id);
+          io.to(`lobby_${lobby.id}`).emit("player_left", socket.id);
+        }
+      });
+    });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -130,7 +230,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

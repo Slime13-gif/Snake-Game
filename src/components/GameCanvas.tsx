@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { io, Socket } from 'socket.io-client';
 import { Duck, Food, Point, ControlMode, SpecialDrop, GameMode, Skin, Theme } from '../types';
 import { SKINS, COLORS } from '../constants';
 
@@ -12,11 +13,13 @@ interface GameCanvasProps {
   onGameOver: (score: number) => void;
   onUpdateLeaderboard: (leaders: { name: string, score: number }[]) => void;
   onScoreUpdate: (score: number) => void;
-  onPowerUpsUpdate?: (inventory: { SPEED: number, VISION: number, MAGNET: number }, active: { SPEED: number, VISION: number, MAGNET: number }) => void;
-  activatePowerUp?: 'SPEED' | 'VISION' | 'MAGNET' | null;
+  onPowerUpsUpdate?: (inventory: { SPEED: number, VISION: number, MAGNET: number, SUPER: number }, active: { SPEED: number, VISION: number, MAGNET: number, SUPER: number }) => void;
+  activatePowerUp?: 'SPEED' | 'VISION' | 'MAGNET' | 'SUPER' | null;
   theme?: Theme;
   onSpecialDropSpawned?: () => void;
   devMode?: boolean;
+  lobbyId: number;
+  token: string | null;
 }
 
 const DUCK_RADIUS = 22;
@@ -119,10 +122,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   activatePowerUp,
   theme = 'NAVY',
   onSpecialDropSpawned,
-  devMode = false
+  devMode = false,
+  lobbyId,
+  token
 }) => {
   const WORLD_SIZE = gameMode === 'LARGE' ? 6000 : gameMode === 'SMALL' ? 1500 : 3000;
-  const BOT_COUNT = gameMode === 'LARGE' ? 80 : gameMode === 'SMALL' ? 5 : 25;
+  const BOT_COUNT = lobbyId === 3 ? 0 : (gameMode === 'LARGE' ? 80 : gameMode === 'SMALL' ? 5 : 25);
   const FOOD_COUNT = gameMode === 'LARGE' ? 1800 : gameMode === 'SMALL' ? 120 : 500;
   const WORLD_CENTER = WORLD_SIZE / 2;
   const SPAWN_SAFETY_DIST = gameMode === 'SMALL' ? 300 : 600;
@@ -240,11 +245,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     isDead: false,
     speed: 5.0,
     isBoosting: false,
-    inventory: { SPEED: 0, VISION: 0, MAGNET: 0 },
-    activePowerUps: { SPEED: 0, VISION: 0, MAGNET: 0 },
+    inventory: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 },
+    activePowerUps: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 },
   });
 
   const botsRef = useRef<Duck[]>([]);
+  const remotePlayersRef = useRef<Map<string, Duck>>(new Map());
+  const socketRef = useRef<Socket | null>(null);
   const foodsRef = useRef<Food[]>([]);
   const specialDropsRef = useRef<SpecialDrop[]>([]);
   const particles = useRef<{
@@ -276,6 +283,49 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
   // Initialize bots and food
   useEffect(() => {
+    // Socket.io initialization
+    const socket = io();
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      socket.emit('join_lobby', {
+        lobbyId,
+        playerName,
+        skinId: currentSkinId,
+        color: selectedSkin.color,
+        token
+      });
+    });
+
+    socket.on('lobby_state', ({ players, bots }: { players: any[], bots: any[] }) => {
+      players.forEach(p => {
+        if (p.id !== socket.id) {
+          remotePlayersRef.current.set(p.id, p);
+        }
+      });
+    });
+
+    socket.on('player_joined', (player: Duck) => {
+      if (player.id !== socket.id) {
+        remotePlayersRef.current.set(player.id, player);
+      }
+    });
+
+    socket.on('player_updated', (player: Duck) => {
+      if (player.id !== socket.id) {
+        remotePlayersRef.current.set(player.id, player);
+      }
+    });
+
+    socket.on('player_left', (playerId: string) => {
+      remotePlayersRef.current.delete(playerId);
+    });
+
+    socket.on('error', (msg: string) => {
+      alert(msg);
+      window.location.reload();
+    });
+
     botsRef.current = Array.from({ length: BOT_COUNT }).map((_, i) => {
       let spawnX, spawnY;
       // Ensure initial bots aren't right on top of player
@@ -299,8 +349,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         isDead: false,
         speed: 4.5,
         isBoosting: false,
-        inventory: { SPEED: 0, VISION: 0, MAGNET: 0 },
-        activePowerUps: { SPEED: 0, VISION: 0, MAGNET: 0 },
+        inventory: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 },
+        activePowerUps: { SPEED: 0, VISION: 0, MAGNET: 0, SUPER: 0 },
       };
     });
 
@@ -341,6 +391,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           playSound('pop');
         }
       }
+      if (e.key === '4') {
+        if ((playerRef.current.inventory.SUPER > 0 || devMode) && playerRef.current.activePowerUps.SUPER <= 0) {
+          if (!devMode) playerRef.current.inventory.SUPER--;
+          playerRef.current.activePowerUps.SUPER = 300; // 5 seconds at 60fps
+          playSound('boost');
+        }
+      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -356,8 +413,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      socket.disconnect();
     };
-  }, [controlMode]);
+  }, [controlMode, lobbyId]);
 
   const handleMouseMove = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;
@@ -407,7 +465,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     // Boundary check
     let isDead = duck.isDead;
     if (nextHead.x <= 0 || nextHead.x >= WORLD_SIZE || nextHead.y <= 0 || nextHead.y >= WORLD_SIZE) {
-      isDead = true;
+      if (duck.activePowerUps.SUPER <= 0) {
+        isDead = true;
+      } else {
+        // Bounce or just stay at boundary
+        nextHead.x = Math.max(0, Math.min(WORLD_SIZE, nextHead.x));
+        nextHead.y = Math.max(0, Math.min(WORLD_SIZE, nextHead.y));
+      }
     }
 
     // Update history
@@ -538,8 +602,20 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const updatedPlayer = updateDuck(player, targetAngle, true, bots, foods, controlMode === 'KEYBOARD' ? 0.4 : 0.25);
     playerRef.current = updatedPlayer;
 
+    // Emit update to server
+    if (socketRef.current?.connected) {
+      socketRef.current.emit('update_player', {
+        lobbyId,
+        head: updatedPlayer.head,
+        angle: updatedPlayer.angle,
+        score: updatedPlayer.score,
+        isBoosting: updatedPlayer.isBoosting,
+        trail: updatedPlayer.trail
+      });
+    }
+
     // Update Duck Grid for bots to use
-    updateDuckGrid([updatedPlayer, ...bots]);
+    updateDuckGrid([updatedPlayer, ...bots, ...Array.from(remotePlayersRef.current.values())]);
 
     if (updatedPlayer.isDead && !player.isDead) {
       // Death particles
@@ -780,8 +856,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     if (foodChanged) updateFoodGrid(foods);
 
     // 4. Collision Detection (Ducks vs Trails) using Grid
-    allDucks.forEach(duck => {
-      if (duck.isDead) return;
+    for (const duck of allDucks) {
+      if (duck.isDead) continue;
       
       const col = Math.floor(duck.head.x / GRID_SIZE);
       const row = Math.floor(duck.head.y / GRID_SIZE);
@@ -791,8 +867,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           const key = `${col + i},${row + j}`;
           const cellDucks = duckGrid.current.get(key);
           if (cellDucks) {
-            cellDucks.forEach(other => {
-              if (duck.id === other.id) return;
+            for (const other of cellDucks) {
+              if (duck.id === other.id) continue;
               
               // Trail collision
               if (other.trail.length > 0) {
@@ -800,6 +876,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
                   const p = other.trail[k];
                   const dist = Math.hypot(duck.head.x - p.x, duck.head.y - p.y);
                   if (dist < DUCK_RADIUS + DUCKLING_RADIUS - 5) {
+                    if (duck.activePowerUps.SUPER > 0) {
+                      // If super, other duck dies if it's not also super
+                      if (other.activePowerUps.SUPER <= 0) {
+                        other.isDead = true;
+                        dropFood(other, foodsRef.current);
+                        updateFoodGrid(foodsRef.current);
+                        playSound('pop');
+                      }
+                      continue;
+                    }
                     duck.isDead = true;
                     dropFood(duck, foodsRef.current);
                     updateFoodGrid(foodsRef.current);
@@ -831,6 +917,24 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               // Head-to-head collision
               const headDist = Math.hypot(duck.head.x - other.head.x, duck.head.y - other.head.y);
               if (headDist < DUCK_RADIUS * 2 - 5) {
+                if (duck.activePowerUps.SUPER > 0 && other.activePowerUps.SUPER > 0) {
+                  // Both super, no one dies
+                  continue;
+                } else if (duck.activePowerUps.SUPER > 0) {
+                  // Only duck is super, other dies
+                  other.isDead = true;
+                  dropFood(other, foodsRef.current);
+                  updateFoodGrid(foodsRef.current);
+                  playSound('pop');
+                  continue;
+                } else if (other.activePowerUps.SUPER > 0) {
+                  // Only other is super, duck dies
+                  duck.isDead = true;
+                  dropFood(duck, foodsRef.current);
+                  updateFoodGrid(foodsRef.current);
+                  playSound('pop');
+                  continue;
+                }
                 duck.isDead = true;
                 other.isDead = true;
                 dropFood(duck, foodsRef.current);
@@ -859,11 +963,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
                   playSound('pop');
                 }
               }
-            });
+            }
           }
         }
       }
-    });
+    }
 
     // Filter out dead bots and respawn
     const aliveBots = updatedBots.filter(b => !b.isDead);
@@ -903,11 +1007,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     // 5. Update Leaderboard (Throttled)
     if (time - lastLeaderboardUpdate.current > 500) {
-      const leaders = [updatedPlayer, ...aliveBots]
+      const leaders = [updatedPlayer, ...aliveBots, ...Array.from(remotePlayersRef.current.values())]
         .filter(d => !d.isDead)
         .sort((a, b) => b.score - a.score)
         .slice(0, 5)
-        .map(d => ({ name: d.name, score: d.score }));
+        .map(d => ({ 
+          name: d.id.startsWith('bot-') ? d.name : `${d.name} +`, 
+          score: d.score 
+        }));
       
       onUpdateLeaderboard(leaders);
       lastLeaderboardUpdate.current = time;
@@ -952,9 +1059,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
           // Give random power-up
           const rand = Math.random();
-          if (rand < 0.33) {
+          if (rand < 0.1) {
+            duck.inventory.SUPER++;
+          } else if (rand < 0.4) {
             duck.inventory.SPEED++;
-          } else if (rand < 0.66) {
+          } else if (rand < 0.7) {
             duck.inventory.VISION++;
           } else {
             duck.inventory.MAGNET++;
@@ -991,7 +1100,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     }
 
     // Emit boost particles
-    [player, ...bots].forEach(duck => {
+    [player, ...bots, ...Array.from(remotePlayersRef.current.values())].forEach(duck => {
       if (duck.isBoosting && !duck.isDead) {
         for (let i = 0; i < 2; i++) {
           particles.current.push({
@@ -1161,7 +1270,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.globalAlpha = 1;
 
     // Draw Ducks (Optimized: Culling)
-    const allDucks = [player, ...bots];
+    const allDucks = [player, ...bots, ...Array.from(remotePlayersRef.current.values())];
     const leader = allDucks.reduce((prev, current) => (prev.score > current.score) ? prev : current);
 
     allDucks.forEach(duck => {
@@ -1241,6 +1350,43 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       // Body
       drawDuckBody(0, 0, DUCK_RADIUS, duck, true);
 
+      // Super Visual Effect
+      if (duck.activePowerUps.SUPER > 0) {
+        ctx.save();
+        const pulse = (Date.now() / 150) % (Math.PI * 2);
+        const radius = DUCK_RADIUS + 15 + Math.sin(pulse) * 8;
+        
+        // Outer glow
+        const gradient = ctx.createRadialGradient(0, 0, DUCK_RADIUS, 0, 0, radius);
+        gradient.addColorStop(0, 'rgba(248, 113, 113, 0.4)');
+        gradient.addColorStop(0.7, 'rgba(248, 113, 113, 0.2)');
+        gradient.addColorStop(1, 'rgba(248, 113, 113, 0)');
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Shield ring
+        ctx.strokeStyle = 'rgba(248, 113, 113, 0.8)';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(0, 0, DUCK_RADIUS + 10, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        // Sparkles
+        for (let i = 0; i < 4; i++) {
+          const angle = (Date.now() / 500 + (i * Math.PI / 2)) % (Math.PI * 2);
+          const sx = Math.cos(angle) * (DUCK_RADIUS + 12);
+          const sy = Math.sin(angle) * (DUCK_RADIUS + 12);
+          ctx.fillStyle = 'white';
+          ctx.beginPath();
+          ctx.arc(sx, sy, 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        
+        ctx.restore();
+      }
+
       // Magnet Visual Effect
       if (duck.activePowerUps.MAGNET > 0) {
         ctx.save();
@@ -1288,7 +1434,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
       // Name tag
       ctx.save();
-      const name = duck.name;
+      const name = duck.id.startsWith('bot-') ? duck.name : `${duck.name} +`;
       ctx.font = 'bold 13px sans-serif';
       const textWidth = ctx.measureText(name).width;
       const paddingH = 10;
@@ -1482,12 +1628,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     ctx.arc(player.head.x * scale, player.head.y * scale, 3, 0, Math.PI * 2);
     ctx.fill();
 
-    // Bots on minimap
-    bots.forEach(bot => {
-      if (bot.isDead) return;
-      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    // Bots and Remote Players on minimap
+    [...bots, ...Array.from(remotePlayersRef.current.values())].forEach(duck => {
+      if (duck.isDead) return;
+      ctx.fillStyle = duck.id.startsWith('bot') ? 'rgba(255,255,255,0.5)' : duck.color;
       ctx.beginPath();
-      ctx.arc(bot.head.x * scale, bot.head.y * scale, 1.5, 0, Math.PI * 2);
+      ctx.arc(duck.head.x * scale, duck.head.y * scale, duck.id.startsWith('bot') ? 1.5 : 2.5, 0, Math.PI * 2);
       ctx.fill();
     });
     ctx.restore();
@@ -1544,6 +1690,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           if (!devMode) playerRef.current.inventory.MAGNET--;
           playerRef.current.activePowerUps.MAGNET = 300;
           playSound('pop');
+        }
+      } else if (activatePowerUp === 'SUPER') {
+        if ((playerRef.current.inventory.SUPER > 0 || devMode) && playerRef.current.activePowerUps.SUPER <= 0) {
+          if (!devMode) playerRef.current.inventory.SUPER--;
+          playerRef.current.activePowerUps.SUPER = 300;
+          playSound('boost');
         }
       }
     }

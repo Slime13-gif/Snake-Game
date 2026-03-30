@@ -7,7 +7,7 @@ export interface Point {
   y: number;
 }
 
-export type PowerUpType = 'SPEED' | 'VISION' | 'MAGNET';
+export type PowerUpType = 'SPEED' | 'VISION' | 'MAGNET' | 'SUPER';
 
 export interface PowerUp {
   type: PowerUpType;
@@ -42,11 +42,13 @@ export interface Duck {
     SPEED: number;
     VISION: number;
     MAGNET: number;
+    SUPER: number;
   };
   activePowerUps: {
     SPEED: number; // remaining frames
     VISION: number; // remaining frames
     MAGNET: number; // remaining frames
+    SUPER: number; // remaining frames
   };
 }
 
